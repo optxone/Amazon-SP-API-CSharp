@@ -1,0 +1,56 @@
+name: Optxone Package
+
+# Publishes our build of FikaAmazonAPI to the optxone GitHub Packages NuGet feed as
+# Optxone.CSharpAmazonSpAPI. The upstream csproj is left untouched (PackageId/Version are
+# overridden at pack time) so syncing abuzuhri/main never conflicts. See OPTXONE.md.
+#
+# Release: push a tag `optx-v<upstream version>.<our revision>`, e.g. `optx-v1.9.33.1`,
+# or run manually with a version.
+
+on:
+  push:
+    tags:
+      - 'optx-v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Package version, e.g. 1.9.33.1"
+        required: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Resolve version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ inputs.version }}"
+          else
+            VERSION="${GITHUB_REF_NAME#optx-v}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      # Build then pack --no-build: the csproj sets GeneratePackageOnBuild, which breaks a bare `dotnet pack`.
+      - name: Build and pack
+        run: |
+          PROPS="-p:PackageId=Optxone.CSharpAmazonSpAPI -p:Version=${{ steps.version.outputs.version }} -p:RepositoryUrl=https://github.com/${{ github.repository }} -p:GeneratePackageOnBuild=false"
+          dotnet build ./Source/FikaAmazonAPI/FikaAmazonAPI.csproj --configuration Release $PROPS
+          dotnet pack ./Source/FikaAmazonAPI/FikaAmazonAPI.csproj --configuration Release --no-build --output ./artifacts $PROPS
+
+      - name: Push to GitHub Packages
+        run: |
+          dotnet nuget push "./artifacts/*.nupkg" \
+            --source https://nuget.pkg.github.com/optxone/index.json \
+            --api-key ${{ secrets.GITHUB_TOKEN }} \
+            --skip-duplicate
