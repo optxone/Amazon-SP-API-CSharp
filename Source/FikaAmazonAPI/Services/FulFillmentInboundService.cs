@@ -221,9 +221,56 @@ namespace FikaAmazonAPI.Services
         public GetShipmentsResult GetShipments(ParameterGetShipments parameterGetLabels) =>
             Task.Run(() => GetShipmentsAsync(parameterGetLabels)).ConfigureAwait(false).GetAwaiter().GetResult();
 
+        /// <summary>
+        /// getShipments. Follows <c>NextToken</c> like <see cref="GetShipmentItemsAsync"/>: every page is read unless
+        /// <see cref="ParameterGetShipments.MaxNumberOfPages"/> says otherwise, and the result's <c>NextToken</c> is null once
+        /// every page is read (it used to return the first page only, with the token on it).
+        /// </summary>
         public async Task<GetShipmentsResult> GetShipmentsAsync(ParameterGetShipments parameterGetLabels, CancellationToken cancellationToken = default)
         {
             var parameter = parameterGetLabels.getParameters();
+            await CreateAuthorizedRequestAsync(FulFillmentInboundApiUrls.GetShipments, RestSharp.Method.Get, parameter, cancellationToken: cancellationToken);
+
+            var response = await ExecuteRequestAsync<GetShipmentsResponse>(RateLimitType.FulFillmentInbound_GetShipments, cancellationToken);
+            if (response == null || response.Payload == null)
+                return null;
+
+            return await ReadRemainingShipmentPagesAsync(response.Payload, parameterGetLabels.MaxNumberOfPages,
+                nextToken => GetShipmentsByNextTokenAsync(nextToken, parameterGetLabels.MarketplaceId, cancellationToken));
+        }
+
+        /// <summary>Adds the pages after <paramref name="first"/> to it, up to <paramref name="maxNumberOfPages"/> pages in all.</summary>
+        internal static async Task<GetShipmentsResult> ReadRemainingShipmentPagesAsync(GetShipmentsResult first, int? maxNumberOfPages,
+            Func<string, Task<GetShipmentsResult>> nextPage)
+        {
+            if (maxNumberOfPages.HasValue && maxNumberOfPages.Value <= 1)
+                return first;
+
+            if (first.ShipmentData == null) first.ShipmentData = new InboundShipmentList();
+            var pageCount = 1;
+            var nextToken = first.NextToken;
+            while (!string.IsNullOrEmpty(nextToken))
+            {
+                var page = await nextPage(nextToken);
+                if (page?.ShipmentData != null) first.ShipmentData.AddRange(page.ShipmentData);
+                nextToken = page?.NextToken;
+                pageCount++;
+                if (maxNumberOfPages.HasValue && pageCount >= maxNumberOfPages.Value)
+                    break;
+            }
+            first.NextToken = nextToken;
+            return first;
+        }
+
+        /// <summary>One getShipments page by token (QueryType NEXT_TOKEN), for the given marketplace or the credential's.</summary>
+        public async Task<GetShipmentsResult> GetShipmentsByNextTokenAsync(string nextToken, string marketplaceId = null, CancellationToken cancellationToken = default)
+        {
+            var parameter = new ParameterGetShipments
+            {
+                QueryType = Constants.QueryType.NEXT_TOKEN,
+                NextToken = nextToken,
+                MarketplaceId = marketplaceId ?? AmazonCredential.MarketPlace.ID,
+            }.getParameters();
             await CreateAuthorizedRequestAsync(FulFillmentInboundApiUrls.GetShipments, RestSharp.Method.Get, parameter, cancellationToken: cancellationToken);
 
             var response = await ExecuteRequestAsync<GetShipmentsResponse>(RateLimitType.FulFillmentInbound_GetShipments, cancellationToken);
@@ -234,10 +281,18 @@ namespace FikaAmazonAPI.Services
 
         public GetShipmentItemsResult GetShipmentItemsByShipmentId(string shipmentId) =>
             Task.Run(() => GetShipmentItemsByShipmentIdAsync(shipmentId)).ConfigureAwait(false).GetAwaiter().GetResult();
+
+        /// <summary>
+        /// getShipmentItemsByShipmentId. <paramref name="marketplaceId"/> null = the credential's marketplace (the account's
+        /// home), as before; pass the store's marketplace for a store that is not the home one.
+        /// </summary>
         public async Task<GetShipmentItemsResult> GetShipmentItemsByShipmentIdAsync(string shipmentId, CancellationToken cancellationToken = default)
+            => await GetShipmentItemsByShipmentIdAsync(shipmentId, null, cancellationToken);
+
+        public async Task<GetShipmentItemsResult> GetShipmentItemsByShipmentIdAsync(string shipmentId, string marketplaceId, CancellationToken cancellationToken = default)
         {
             List<KeyValuePair<string, string>> queryParameters = new List<KeyValuePair<string, string>>();
-            queryParameters.Add(new KeyValuePair<string, string>("MarketplaceId", AmazonCredential.MarketPlace.ID));
+            queryParameters.Add(new KeyValuePair<string, string>("MarketplaceId", marketplaceId ?? AmazonCredential.MarketPlace.ID));
 
             await CreateAuthorizedRequestAsync(FulFillmentInboundApiUrls.GetShipmentItemsByShipmentId(shipmentId), RestSharp.Method.Get, queryParameters, cancellationToken: cancellationToken);
 
