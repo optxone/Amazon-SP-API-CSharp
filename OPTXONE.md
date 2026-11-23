@@ -57,8 +57,7 @@ Keep upstream-able fixes small and, where possible, also open a PR upstream so t
   API in tests and drive `ReportLifecycle` directly.
 - **Orders v0 rate-limit defaults** corrected to Amazon's usage plans (ordersV0.json): `getOrder`, `getOrderBuyerInfo`,
   `getOrderAddress` 0.0167/20 → 0.5/30; `getOrderItems` burst 20 → 30; `getOrderRegulatedInfo` burst 15 → 30.
-- **Private temp files**: the package now also targets `net8.0` (next to `netstandard2.0`). On Linux / macOS the
-  net8.0 build creates the document folder 0700 (a folder this user cannot make private, e.g. one another user created
+- **Private temp files**: the package now targets `net10.0` only (OptXOne runs .NET 10; `netstandard2.0` dropped). On Linux / macOS it
+  creates the document folder 0700 (a folder this user cannot make private, e.g. one another user created
   in a shared `/tmp`, is replaced by a fresh private temp subfolder) and every document file 0600: report documents can
-  hold buyer data. The netstandard2.0 build keeps the umask defaults. Tests project and the `.NET` CI workflow moved to
-  .NET 8.
+  hold buyer data. Tests, sample code and the `.NET` CI workflow moved to .NET 10.

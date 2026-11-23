@@ -21,7 +21,7 @@ namespace FikaAmazonAPI.Utils
     {
         /// <summary>
         /// Folder for downloaded documents (default: a subfolder of the OS temp folder). Set once at startup. Documents can
-        /// hold buyer data: on Linux / macOS (net8.0 build) the folder is made private to the current user (0700) and each
+        /// hold buyer data: on Linux / macOS the folder is made private to the current user (0700) and each
         /// file is created 0600; a folder this user cannot make private (another user's, e.g. pre-created in a shared /tmp)
         /// is not used: a fresh private temp subfolder is used instead.
         /// </summary>
@@ -158,7 +158,6 @@ namespace FikaAmazonAPI.Utils
             }
         }
 
-#if NET7_0_OR_GREATER
         private const UnixFileMode PrivateDirectoryMode = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
         private const UnixFileMode PrivateFileMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
         private const UnixFileMode GroupOrOther =
@@ -207,18 +206,6 @@ namespace FikaAmazonAPI.Utils
                 options.UnixCreateMode = PrivateFileMode;
             return new FileStream(path, options);
         }
-#else
-        // netstandard2.0 has no Unix file-mode API: the folder and files get the process umask's defaults. Consumers on
-        // .NET 8+ get the net8.0 build (private folder and files); on Windows %TEMP% is per user.
-        private static string PrepareDirectory(string directory)
-        {
-            System.IO.Directory.CreateDirectory(directory);
-            return directory;
-        }
-
-        private static FileStream CreateNewFile(string path)
-            => new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None, CopyBufferSize, FileOptions.Asynchronous);
-#endif
 
         /// <summary>Deletes document files a crashed process left behind (once per process).</summary>
         private static void SweepOrphans(string directory)
