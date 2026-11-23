@@ -65,7 +65,8 @@ namespace Tests
         public void ExpiredUrl_ThrowsTypedDownloadException_AndLeavesNoFile()
         {
             using var client = new HttpClient(new BytesHandler(Array.Empty<byte>(), HttpStatusCode.Forbidden));
-            var before = Directory.Exists(ReportDocumentFile.Directory) ? Directory.GetFiles(ReportDocumentFile.Directory).Length : 0;
+            var directory = ReportDocumentFile.PreparedDirectory();
+            var before = Directory.GetFiles(directory).Length;
 
             var ex = Assert.ThrowsAsync<AmazonReportDocumentDownloadException>(() =>
                 ReportDocumentFile.DownloadAsync(new ReportDocument { ReportDocumentId = "D", Url = "https://s3.example/D" }, client));
@@ -73,7 +74,7 @@ namespace Tests
             Assert.That(ex!.HttpStatus, Is.EqualTo(403));
             Assert.That(ex.ReportDocumentId, Is.EqualTo("D"));
             Assert.That(ex, Is.Not.InstanceOf<AmazonException>(), "not an SP-API (authorization) error");
-            Assert.That(Directory.GetFiles(ReportDocumentFile.Directory).Length, Is.LessThanOrEqualTo(before));
+            Assert.That(Directory.GetFiles(directory).Length, Is.LessThanOrEqualTo(before));
         }
 
         [Test]
@@ -96,6 +97,44 @@ namespace Tests
 
             using var reader = new StreamReader(doc.OpenRead(), Encoding.UTF8);
             Assert.That(await reader.ReadToEndAsync(), Is.EqualTo(Content));
+        }
+
+        // Report documents can hold buyer data: on Linux / macOS the folder is private to this user and files are 0600.
+        [Test]
+        [Platform(Exclude = "Win")]
+        public async Task OnUnix_TheFolderIs0700_AndDocumentsAre0600()
+        {
+            using var content = new MemoryStream(Encoding.UTF8.GetBytes(Content));
+            using var doc = await ReportDocumentFile.FromStreamAsync(content);
+
+            var folder = Path.GetDirectoryName(doc.Path)!;
+            Assert.That(File.GetUnixFileMode(folder), Is.EqualTo(UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute));
+            Assert.That(File.GetUnixFileMode(doc.Path), Is.EqualTo(UnixFileMode.UserRead | UnixFileMode.UserWrite));
+        }
+
+        [Test]
+        [Platform(Exclude = "Win")]
+        public async Task OnUnix_AnExistingGroupReadableFolder_IsMadePrivate()
+        {
+            var original = ReportDocumentFile.Directory;
+            var folder = Path.Combine(Path.GetTempPath(), $"rdf-test-{Guid.NewGuid():N}");
+            Directory.CreateDirectory(folder, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
+                                              UnixFileMode.GroupRead | UnixFileMode.GroupExecute | UnixFileMode.OtherRead | UnixFileMode.OtherExecute);
+            File.SetUnixFileMode(folder, (UnixFileMode)0b111_101_101); // 0755 whatever the umask
+            try
+            {
+                ReportDocumentFile.Directory = folder;
+                using var content = new MemoryStream(Encoding.UTF8.GetBytes(Content));
+                using var doc = await ReportDocumentFile.FromStreamAsync(content);
+
+                Assert.That(Path.GetDirectoryName(doc.Path), Is.EqualTo(folder));
+                Assert.That(File.GetUnixFileMode(folder), Is.EqualTo(UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute));
+            }
+            finally
+            {
+                ReportDocumentFile.Directory = original;
+                Directory.Delete(folder, true);
+            }
         }
 
         private static byte[] Gzip(string text)

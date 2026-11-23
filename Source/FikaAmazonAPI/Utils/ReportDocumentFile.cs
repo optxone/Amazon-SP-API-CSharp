@@ -19,8 +19,17 @@ namespace FikaAmazonAPI.Utils
     /// </summary>
     public sealed class ReportDocumentFile : IDisposable
     {
-        /// <summary>Folder for downloaded documents (default: a subfolder of the OS temp folder). Set once at startup.</summary>
+        /// <summary>
+        /// Folder for downloaded documents (default: a subfolder of the OS temp folder). Set once at startup. Documents can
+        /// hold buyer data: on Linux / macOS (net8.0 build) the folder is made private to the current user (0700) and each
+        /// file is created 0600; a folder this user cannot make private (another user's, e.g. pre-created in a shared /tmp)
+        /// is not used: a fresh private temp subfolder is used instead.
+        /// </summary>
         public static string Directory { get; set; } = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "amazon-sp-api-report-documents");
+
+        private static readonly object DirectoryLock = new object();
+        private static string? _preparedFor;
+        private static string? _prepared;
 
         /// <summary>A document file older than this is an orphan of a crashed process; the first download of a process deletes it.</summary>
         public static readonly TimeSpan OrphanAge = TimeSpan.FromHours(12);
@@ -92,8 +101,7 @@ namespace FikaAmazonAPI.Utils
                                || response.Content.Headers.ContentEncoding.Any(e => e.Equals("gzip", StringComparison.OrdinalIgnoreCase));
 
                     using (var body = await response.Content.ReadAsStreamAsync().ConfigureAwait(false))
-                    using (var file = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None,
-                               CopyBufferSize, FileOptions.Asynchronous))
+                    using (var file = CreateNewFile(path))
                     {
                         await body.CopyToAsync(file, CopyBufferSize, cancellationToken).ConfigureAwait(false);
                     }
@@ -114,8 +122,7 @@ namespace FikaAmazonAPI.Utils
             var path = NewPath();
             try
             {
-                using (var file = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None,
-                           CopyBufferSize, FileOptions.Asynchronous))
+                using (var file = CreateNewFile(path))
                 {
                     if (content.CanSeek) content.Position = 0;
                     await content.CopyToAsync(file, CopyBufferSize, cancellationToken).ConfigureAwait(false);
@@ -131,18 +138,95 @@ namespace FikaAmazonAPI.Utils
 
         private static string NewPath()
         {
-            System.IO.Directory.CreateDirectory(Directory);
-            if (Interlocked.Exchange(ref _swept, 1) == 0) SweepOrphans();
-            return System.IO.Path.Combine(Directory, $"{Guid.NewGuid():N}.doc");
+            var directory = PreparedDirectory();
+            if (Interlocked.Exchange(ref _swept, 1) == 0) SweepOrphans(directory);
+            return System.IO.Path.Combine(directory, $"{Guid.NewGuid():N}.doc");
         }
 
+        /// <summary>The folder documents are written to: <see cref="Directory"/>, made private (see there), resolved once per value.</summary>
+        internal static string PreparedDirectory()
+        {
+            var configured = Directory;
+            lock (DirectoryLock)
+            {
+                if (_prepared == null || _preparedFor != configured)
+                {
+                    _prepared = PrepareDirectory(configured);
+                    _preparedFor = configured;
+                }
+                return _prepared;
+            }
+        }
+
+#if NET7_0_OR_GREATER
+        private const UnixFileMode PrivateDirectoryMode = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
+        private const UnixFileMode PrivateFileMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+        private const UnixFileMode GroupOrOther =
+            UnixFileMode.GroupRead | UnixFileMode.GroupWrite | UnixFileMode.GroupExecute |
+            UnixFileMode.OtherRead | UnixFileMode.OtherWrite | UnixFileMode.OtherExecute;
+
+        private static string PrepareDirectory(string directory)
+        {
+            if (OperatingSystem.IsWindows())
+            {
+                System.IO.Directory.CreateDirectory(directory); // under the per-user %TEMP%, ACL-inherited
+                return directory;
+            }
+
+            try
+            {
+                if (!System.IO.Directory.Exists(directory))
+                    System.IO.Directory.CreateDirectory(directory, PrivateDirectoryMode);
+                var info = new DirectoryInfo(directory);
+                if (info.LinkTarget != null)
+                    throw new IOException($"{directory} is a symbolic link.");
+                // chmod succeeds only for the folder's owner: a folder another user created throws here.
+                File.SetUnixFileMode(directory, PrivateDirectoryMode);
+                if ((File.GetUnixFileMode(directory) & GroupOrOther) != 0)
+                    throw new IOException($"{directory} is accessible to other users.");
+                return directory;
+            }
+            catch (Exception ex) when (ex is UnauthorizedAccessException || ex is IOException)
+            {
+                // Created 0700 by the runtime, owned by this user.
+                return System.IO.Directory.CreateTempSubdirectory("amazon-sp-api-report-documents-").FullName;
+            }
+        }
+
+        private static FileStream CreateNewFile(string path)
+        {
+            var options = new FileStreamOptions
+            {
+                Mode = FileMode.CreateNew,
+                Access = FileAccess.Write,
+                Share = FileShare.None,
+                Options = FileOptions.Asynchronous,
+                BufferSize = CopyBufferSize,
+            };
+            if (!OperatingSystem.IsWindows())
+                options.UnixCreateMode = PrivateFileMode;
+            return new FileStream(path, options);
+        }
+#else
+        // netstandard2.0 has no Unix file-mode API: the folder and files get the process umask's defaults. Consumers on
+        // .NET 8+ get the net8.0 build (private folder and files); on Windows %TEMP% is per user.
+        private static string PrepareDirectory(string directory)
+        {
+            System.IO.Directory.CreateDirectory(directory);
+            return directory;
+        }
+
+        private static FileStream CreateNewFile(string path)
+            => new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None, CopyBufferSize, FileOptions.Asynchronous);
+#endif
+
         /// <summary>Deletes document files a crashed process left behind (once per process).</summary>
-        private static void SweepOrphans()
+        private static void SweepOrphans(string directory)
         {
             try
             {
                 var cutoff = DateTime.UtcNow - OrphanAge;
-                foreach (var f in new DirectoryInfo(Directory).EnumerateFiles("*.doc"))
+                foreach (var f in new DirectoryInfo(directory).EnumerateFiles("*.doc"))
                     if (f.LastWriteTimeUtc < cutoff) TryDelete(f.FullName);
             }
             catch (Exception)
