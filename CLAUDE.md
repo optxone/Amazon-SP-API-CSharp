@@ -10,9 +10,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `Amazon-SP-API-CSharp.sln` contains three buildable projects under `Source/`:
 
-- **`FikaAmazonAPI/`** — the shipping library, `netstandard2.0`. This is the only thing that gets packed/published.
-- **`FikaAmazonAPI.SampleCode/`** — `net6.0` console app with one `*Sample.cs` per API surface. Treat this as the live usage documentation; when adding/changing public methods, update the matching sample.
-- **`Tests/`** — `net6.0` NUnit project. Currently only `RateLimitsTests.cs`. The library exposes `internal` members to it via `[assembly: InternalsVisibleTo("Tests")]` (see `Utils/RateLimits.cs`).
+- **`FikaAmazonAPI/`** — the shipping library, `net10.0` (OptXOne fork; was `netstandard2.0`). This is the only thing that gets packed/published.
+- **`FikaAmazonAPI.SampleCode/`** — `net10.0` console app with one `*Sample.cs` per API surface. Treat this as the live usage documentation; when adding/changing public methods, update the matching sample.
+- **`Tests/`** — `net10.0` NUnit project. Currently only `RateLimitsTests.cs`. The library exposes `internal` members to it via `[assembly: InternalsVisibleTo("Tests")]` (see `Utils/RateLimits.cs`).
 
 `Source/RestSharp/` is **not** a project — it's a vendored fork of RestSharp. `FikaAmazonAPI.csproj` glob-includes it via `<Compile Include="..\RestSharp\*.cs" />`. Don't add a project reference; edits there compile straight into the library.
 
@@ -59,7 +59,7 @@ Anything carrying buyer PII derives from `ParameterBasedPII` and implements `IPa
 
 ### Singleton HttpClient
 
-`AmazonSpApiSDK/Runtime/RestClientSingleton` keeps one process-wide `HttpClient` backed by `StandardSocketsHttpHandler` with `PooledConnectionLifetime = 1 minute` to fix the socket-leak in issue #523. Because the library targets `netstandard2.0`, the framework `SocketsHttpHandler` isn't available, so the `StandardSocketsHttpHandler` NuGet (a backport) is used to expose `PooledConnectionLifetime` on .NET Framework consumers.
+`AmazonSpApiSDK/Runtime/RestClientSingleton` keeps one process-wide `HttpClient` backed by `StandardSocketsHttpHandler` with `PooledConnectionLifetime = 1 minute` to fix the socket-leak in issue #523. The library used to target `netstandard2.0`, where the framework `SocketsHttpHandler` isn't available, so the `StandardSocketsHttpHandler` NuGet (a backport) is used to expose `PooledConnectionLifetime` on .NET Framework consumers.
 
 ### Convention: every public method is sync + async
 
