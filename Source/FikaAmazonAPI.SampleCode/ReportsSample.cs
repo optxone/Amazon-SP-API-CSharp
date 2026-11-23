@@ -192,6 +192,24 @@ namespace FikaAmazonAPI.SampleCode
             return amazonConnection.Reports.CreateReportAndDownloadFile(reportTypes, dataStartTime, dataEndTime, reportOptions);
         }
 
+        /// <summary>
+        /// Large reports: the document goes to a temp file (never whole in memory) and is read as a stream. Null = Amazon
+        /// CANCELLED the report (no data for the window). FATAL → AmazonReportFatalException; still running after
+        /// MaxWait → AmazonReportTimeoutException.
+        /// </summary>
+        public async Task<int> CreateReportAndDownloadToTempFile()
+        {
+            var polling = new FikaAmazonAPI.Services.ReportPollingOptions { MaxWait = TimeSpan.FromMinutes(45) };
+            using var document = await amazonConnection.Reports.CreateReportAndDownloadDocumentFileAsync(
+                ReportTypes.GET_LEDGER_SUMMARY_VIEW_DATA, DateTime.UtcNow.AddDays(-30), DateTime.UtcNow, polling: polling);
+            if (document == null) return 0;
+
+            using var reader = new StreamReader(document.OpenRead());
+            var lines = 0;
+            while (await reader.ReadLineAsync() != null) lines++;
+            return lines;
+        }
+
         public void DownloadExistingReportAndDownloadFile()
         {
             DateTime createdSince = DateTime.UtcNow.AddDays(-60);

@@ -290,6 +290,22 @@ var data = amazonConnection.Reports.GetReportDocument("50039018869997",true);
 ```
 
 
+### Large reports: download to a temp file
+
+```Csharp
+// The document is streamed to a temp file (never whole in memory); Dispose deletes it. Null = Amazon CANCELLED the
+// report (no data for the window). FATAL (or DONE without a document) throws AmazonReportFatalException with the start of
+// Amazon's error document; still running after MaxWait (default 2 h) throws AmazonReportTimeoutException.
+var polling = new ReportPollingOptions { FirstDelay = TimeSpan.FromSeconds(2), MaxDelay = TimeSpan.FromSeconds(30), MaxWait = TimeSpan.FromHours(1) };
+using var document = await amazonConnection.Reports.CreateReportAndDownloadDocumentFileAsync(
+    ReportTypes.GET_LEDGER_SUMMARY_VIEW_DATA, DateTime.UtcNow.AddDays(-30), DateTime.UtcNow, polling: polling);
+if (document != null)
+{
+    using var reader = new StreamReader(document.OpenRead()); // gzip is decompressed while reading
+    // ...
+}
+```
+
 ### Report Manager 🚀🧑‍🚀✨
 An easy way to get the report you need and convert the file returned from Amazon to a class or list. This feature is only available for some reports, as it takes significant effort to cover all [report types](https://github.com/amzn/selling-partner-api-docs/blob/main/references/reports-api/reporttype-values.md).
 ```CSharp

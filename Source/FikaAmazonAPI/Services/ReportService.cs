@@ -16,7 +16,7 @@ using static FikaAmazonAPI.Utils.Constants;
 
 namespace FikaAmazonAPI.Services
 {
-    public class ReportService : RequestService
+    public class ReportService : RequestService, IReportOperations
     {
         public ReportService(AmazonCredential amazonCredential, ILoggerFactory? loggerFactory) : base(amazonCredential, loggerFactory)
         {
@@ -214,6 +214,33 @@ namespace FikaAmazonAPI.Services
             return await GetFileStreamAsync(reportDocument, cancellationToken);
         }
 
+        /// <summary>
+        /// Downloads a report document to a temp file, never whole in memory (gzip is kept on disk and undone by
+        /// <see cref="ReportDocumentFile.OpenRead"/>). Dispose the result to delete the file. Null when Amazon returns no
+        /// document metadata.
+        /// </summary>
+        /// <exception cref="AmazonReportDocumentDownloadException">The pre-signed URL answered a non-success status.</exception>
+        public ReportDocumentFile GetReportDocumentFile(string reportDocumentId, bool isRestrictedReport = false) =>
+            Task.Run(() => GetReportDocumentFileAsync(reportDocumentId, isRestrictedReport)).ConfigureAwait(false).GetAwaiter().GetResult();
+
+        public async Task<ReportDocumentFile> GetReportDocumentFileAsync(string reportDocumentId, bool isRestrictedReport = false, CancellationToken cancellationToken = default)
+        {
+            var reportDocument = await GetReportDocumentAsync(reportDocumentId, isRestrictedReport, cancellationToken);
+            if (reportDocument == null)
+                return null;
+            if (reportDocument.EncryptionDetails == null)
+                return await ReportDocumentFile.DownloadAsync(reportDocument, null, cancellationToken);
+
+            // Encrypted documents (the retired 2020-09-04 Reports API; 2021-06-30 never encrypts) are decrypted in memory.
+            using (var decrypted = await GetFileStreamAsync(reportDocument, cancellationToken))
+            {
+                return await ReportDocumentFile.FromStreamAsync(decrypted, false, cancellationToken);
+            }
+        }
+
+        Task<ReportDocumentFile> IReportOperations.DownloadDocumentAsync(string reportDocumentId, bool isRestrictedReport, CancellationToken cancellationToken)
+            => GetReportDocumentFileAsync(reportDocumentId, isRestrictedReport, cancellationToken);
+
         private string GetFile(ReportDocument reportDocument) =>
             Task.Run(() => GetFileAsync(reportDocument)).ConfigureAwait(false).GetAwaiter().GetResult();
         private async Task<string> GetFileAsync(ReportDocument reportDocument, CancellationToken cancellationToken = default)
@@ -351,52 +378,107 @@ namespace FikaAmazonAPI.Services
         #endregion
 
 
+        // Create → poll → download. Every overload decides on the report's processingStatus first (ReportLifecycle):
+        // DONE with a document → download; DONE without one → AmazonReportFatalException; CANCELLED → null (Amazon had no
+        // data for the window); FATAL → AmazonReportFatalException (the error document is never returned as data).
+        // Polling backs off up to 30 s and gives up after ReportPollingOptions.MaxWait (default 2 h) with
+        // AmazonReportTimeoutException. The int millisecondsDelay of the older overloads is the first delay of that backoff.
+
         public string CreateReportAndDownloadFile(ReportTypes reportType, DateTime? dataStartTime = null, DateTime? dataEndTime = null, ReportOptions? reportOptions = null, bool isRestrictedReport = false, List<MarketPlace>? marketplaces = null, int millisecondsDelay = 500) =>
             Task.Run(() => CreateReportAndDownloadFileAsync(reportType, dataStartTime, dataEndTime, reportOptions, isRestrictedReport, marketplaces, millisecondsDelay)).ConfigureAwait(false).GetAwaiter().GetResult();
-        public async Task<string> CreateReportAndDownloadFileAsync(ReportTypes reportType, DateTime? dataStartTime = null, DateTime? dataEndTime = null, ReportOptions? reportOptions = null, bool isRestrictedReport = false, List<MarketPlace>? marketplaces = null, int millisecondsDelay = 500, CancellationToken cancellationToken = default)
+        public Task<string> CreateReportAndDownloadFileAsync(ReportTypes reportType, DateTime? dataStartTime = null, DateTime? dataEndTime = null, ReportOptions? reportOptions = null, bool isRestrictedReport = false, List<MarketPlace>? marketplaces = null, int millisecondsDelay = 500, CancellationToken cancellationToken = default)
+            => CreateReportAndDownloadFileAsync(reportType, dataStartTime, dataEndTime, reportOptions, isRestrictedReport, marketplaces, ReportPollingOptions.FromLegacyDelay(millisecondsDelay), cancellationToken);
+
+        public string CreateReportAndDownloadFile(ReportTypes reportType, DateTime? dataStartTime, DateTime? dataEndTime, ReportOptions? reportOptions, bool isRestrictedReport, List<MarketPlace>? marketplaces, ReportPollingOptions polling) =>
+            Task.Run(() => CreateReportAndDownloadFileAsync(reportType, dataStartTime, dataEndTime, reportOptions, isRestrictedReport, marketplaces, polling)).ConfigureAwait(false).GetAwaiter().GetResult();
+        public async Task<string> CreateReportAndDownloadFileAsync(ReportTypes reportType, DateTime? dataStartTime, DateTime? dataEndTime, ReportOptions? reportOptions, bool isRestrictedReport, List<MarketPlace>? marketplaces, ReportPollingOptions polling, CancellationToken cancellationToken = default)
         {
-            if (!isRestrictedReport && Enum.TryParse<RestrictedReportTypes>(reportType.ToString(), out _))
-            {
-                isRestrictedReport = true;
-            }
-
-            var parameters = new ParameterCreateReportSpecification();
-            parameters.reportType = reportType;
-
-            parameters.marketplaceIds = new MarketplaceIds();
-
-            if (marketplaces == null || !marketplaces.Any())
-            {
-                parameters.marketplaceIds.Add(AmazonCredential.MarketPlace.ID);
-            }
-            else
-            {
-                parameters.marketplaceIds.AddRange(marketplaces.Select(x => x.ID).ToList());
-            }
-
-            if (reportOptions != null)
-                parameters.reportOptions = reportOptions;
-
-            if (dataStartTime.HasValue)
-                parameters.dataStartTime = dataStartTime;
-            if (dataEndTime.HasValue)
-                parameters.dataEndTime = dataEndTime;
-
+            var parameters = BuildCreateReportParameters(reportType, dataStartTime, dataEndTime, reportOptions, marketplaces);
+            isRestrictedReport = isRestrictedReport || IsRestrictedReportType(reportType);
             var reportId = await CreateReportAsync(parameters, cancellationToken);
-            return await GetReportFileByReportIdAsync(reportId, isRestrictedReport, millisecondsDelay, cancellationToken);
-
+            return await GetReportFileByReportIdAsync(reportId, isRestrictedReport, polling, cancellationToken);
         }
 
         public MemoryStream CreateReportAndDownloadFileStream(ReportTypes reportType, DateTime? dataStartTime = null, DateTime? dataEndTime = null, ReportOptions? reportOptions = null, bool isRestrictedReport = false, List<MarketPlace>? marketplaces = null, int millisecondsDelay = 500) =>
             Task.Run(() => CreateReportAndDownloadFileStreamAsync(reportType, dataStartTime, dataEndTime, reportOptions, isRestrictedReport, marketplaces, millisecondsDelay)).ConfigureAwait(false).GetAwaiter().GetResult();
 
-        public async Task<MemoryStream> CreateReportAndDownloadFileStreamAsync(ReportTypes reportType, DateTime? dataStartTime = null, DateTime? dataEndTime = null, ReportOptions? reportOptions = null, bool isRestrictedReport = false, List<MarketPlace>? marketplaces = null, int millisecondsDelay = 500, CancellationToken cancellationToken = default)
-        {
-            if (!isRestrictedReport && Enum.TryParse<RestrictedReportTypes>(reportType.ToString(), out _))
-            {
-                isRestrictedReport = true;
-            }
+        public Task<MemoryStream> CreateReportAndDownloadFileStreamAsync(ReportTypes reportType, DateTime? dataStartTime = null, DateTime? dataEndTime = null, ReportOptions? reportOptions = null, bool isRestrictedReport = false, List<MarketPlace>? marketplaces = null, int millisecondsDelay = 500, CancellationToken cancellationToken = default)
+            => CreateReportAndDownloadFileStreamAsync(reportType, dataStartTime, dataEndTime, reportOptions, isRestrictedReport, marketplaces, ReportPollingOptions.FromLegacyDelay(millisecondsDelay), cancellationToken);
 
+        public MemoryStream CreateReportAndDownloadFileStream(ReportTypes reportType, DateTime? dataStartTime, DateTime? dataEndTime, ReportOptions? reportOptions, bool isRestrictedReport, List<MarketPlace>? marketplaces, ReportPollingOptions polling) =>
+            Task.Run(() => CreateReportAndDownloadFileStreamAsync(reportType, dataStartTime, dataEndTime, reportOptions, isRestrictedReport, marketplaces, polling)).ConfigureAwait(false).GetAwaiter().GetResult();
+
+        /// <summary>Buffers the whole decompressed document in memory; prefer CreateReportAndDownloadDocumentFileAsync for large reports.</summary>
+        public async Task<MemoryStream> CreateReportAndDownloadFileStreamAsync(ReportTypes reportType, DateTime? dataStartTime, DateTime? dataEndTime, ReportOptions? reportOptions, bool isRestrictedReport, List<MarketPlace>? marketplaces, ReportPollingOptions polling, CancellationToken cancellationToken = default)
+        {
+            var parameters = BuildCreateReportParameters(reportType, dataStartTime, dataEndTime, reportOptions, marketplaces);
+            isRestrictedReport = isRestrictedReport || IsRestrictedReportType(reportType);
+            var reportId = await CreateReportAsync(parameters, cancellationToken);
+            return await GetReportFileStreamByReportIdAsync(reportId, isRestrictedReport, polling, cancellationToken);
+        }
+
+        /// <summary>
+        /// Creates a report, waits for it and downloads its document to a temp file (never whole in memory). Null when
+        /// Amazon CANCELLED the report (no data for the window). Dispose the result to delete the file.
+        /// </summary>
+        /// <exception cref="AmazonReportFatalException">The report ended FATAL, or DONE without a document.</exception>
+        /// <exception cref="AmazonReportTimeoutException">Not finished within <see cref="ReportPollingOptions.MaxWait"/>.</exception>
+        public ReportDocumentFile CreateReportAndDownloadDocumentFile(ReportTypes reportType, DateTime? dataStartTime = null, DateTime? dataEndTime = null, ReportOptions? reportOptions = null, bool isRestrictedReport = false, List<MarketPlace>? marketplaces = null, ReportPollingOptions? polling = null) =>
+            Task.Run(() => CreateReportAndDownloadDocumentFileAsync(reportType, dataStartTime, dataEndTime, reportOptions, isRestrictedReport, marketplaces, polling)).ConfigureAwait(false).GetAwaiter().GetResult();
+
+        public async Task<ReportDocumentFile> CreateReportAndDownloadDocumentFileAsync(ReportTypes reportType, DateTime? dataStartTime = null, DateTime? dataEndTime = null, ReportOptions? reportOptions = null, bool isRestrictedReport = false, List<MarketPlace>? marketplaces = null, ReportPollingOptions? polling = null, CancellationToken cancellationToken = default)
+        {
+            var result = await CreateReportAndDownloadDocumentFileAsync(
+                BuildCreateReportParameters(reportType, dataStartTime, dataEndTime, reportOptions, marketplaces),
+                isRestrictedReport, polling, cancellationToken);
+            return result.Document;
+        }
+
+        /// <summary>
+        /// Creates a report from a ready specification, waits for it and downloads its document to a temp file; returns
+        /// the report id, final status (DONE / CANCELLED) and polling figures with the document (null when CANCELLED).
+        /// When <c>marketplaceIds</c> is empty, the connection's marketplace is used. Restricted report types are detected.
+        /// </summary>
+        /// <exception cref="AmazonReportFatalException">The report ended FATAL, or DONE without a document.</exception>
+        /// <exception cref="AmazonReportTimeoutException">Not finished within <see cref="ReportPollingOptions.MaxWait"/>.</exception>
+        public Task<ReportFileResult> CreateReportAndDownloadDocumentFileAsync(ParameterCreateReportSpecification parameters, bool isRestrictedReport, ReportPollingOptions? polling = null, CancellationToken cancellationToken = default)
+            => ReportLifecycle.CreateAndDownloadAsync(this, parameters, isRestrictedReport || IsRestrictedReportType(parameters.reportType), polling, cancellationToken);
+
+        public Task<string> GetReportFileByReportIdAsync(string reportId, bool isRestrictedReport, int millisecondsDelay = 500, CancellationToken cancellationToken = default)
+            => GetReportFileByReportIdAsync(reportId, isRestrictedReport, ReportPollingOptions.FromLegacyDelay(millisecondsDelay), cancellationToken);
+
+        /// <summary>Waits for an existing report and downloads it to a file path. Null when CANCELLED.</summary>
+        public async Task<string> GetReportFileByReportIdAsync(string reportId, bool isRestrictedReport, ReportPollingOptions polling, CancellationToken cancellationToken = default)
+        {
+            var poll = await ReportLifecycle.WaitForTerminalStatusAsync(this, reportId, polling, cancellationToken);
+            return await ReportLifecycle.DownloadTerminalAsync(this, poll.Report, null, isRestrictedReport,
+                documentId => GetReportFileAsync(documentId, isRestrictedReport, cancellationToken), cancellationToken);
+        }
+
+        public Task<MemoryStream> GetReportFileStreamByReportIdAsync(string reportId, bool isRestrictedReport, int millisecondsDelay = 500, CancellationToken cancellationToken = default)
+            => GetReportFileStreamByReportIdAsync(reportId, isRestrictedReport, ReportPollingOptions.FromLegacyDelay(millisecondsDelay), cancellationToken);
+
+        /// <summary>Waits for an existing report and downloads it into memory. Null when CANCELLED.</summary>
+        public async Task<MemoryStream> GetReportFileStreamByReportIdAsync(string reportId, bool isRestrictedReport, ReportPollingOptions polling, CancellationToken cancellationToken = default)
+        {
+            var poll = await ReportLifecycle.WaitForTerminalStatusAsync(this, reportId, polling, cancellationToken);
+            return await ReportLifecycle.DownloadTerminalAsync(this, poll.Report, null, isRestrictedReport,
+                documentId => GetReportFileStreamAsync(documentId, isRestrictedReport, cancellationToken), cancellationToken);
+        }
+
+        /// <summary>Waits for an existing report and downloads it to a temp file (never whole in memory). Null when CANCELLED.</summary>
+        public async Task<ReportDocumentFile> GetReportDocumentFileByReportIdAsync(string reportId, bool isRestrictedReport, ReportPollingOptions? polling = null, CancellationToken cancellationToken = default)
+        {
+            var poll = await ReportLifecycle.WaitForTerminalStatusAsync(this, reportId, polling, cancellationToken);
+            return await ReportLifecycle.DownloadTerminalAsync(this, poll.Report, null, isRestrictedReport,
+                documentId => GetReportDocumentFileAsync(documentId, isRestrictedReport, cancellationToken), cancellationToken);
+        }
+
+        private static bool IsRestrictedReportType(ReportTypes? reportType)
+            => reportType.HasValue && Enum.TryParse<RestrictedReportTypes>(reportType.Value.ToString(), out _);
+
+        private ParameterCreateReportSpecification BuildCreateReportParameters(ReportTypes reportType, DateTime? dataStartTime, DateTime? dataEndTime, ReportOptions? reportOptions, List<MarketPlace>? marketplaces)
+        {
             var parameters = new ParameterCreateReportSpecification();
             parameters.reportType = reportType;
 
@@ -418,66 +500,8 @@ namespace FikaAmazonAPI.Services
                 parameters.dataStartTime = dataStartTime;
             if (dataEndTime.HasValue)
                 parameters.dataEndTime = dataEndTime;
-
-            var reportId = await CreateReportAsync(parameters, cancellationToken);
-            return await GetReportFileStreamByReportIdAsync(reportId, isRestrictedReport, millisecondsDelay, cancellationToken);
-
+            return parameters;
         }
-
-        public async Task<string> GetReportFileByReportIdAsync(string reportId, bool isRestrictedReport, int millisecondsDelay = 500, CancellationToken cancellationToken = default)
-        {
-            var filePath = string.Empty;
-            string ReportDocumentId = string.Empty;
-
-            while (string.IsNullOrEmpty(ReportDocumentId) && !cancellationToken.IsCancellationRequested)
-            {
-                var reportData = await GetReportAsync(reportId, cancellationToken);
-                if (!string.IsNullOrEmpty(reportData.ReportDocumentId))
-                {
-                    filePath = await GetReportFileAsync(reportData.ReportDocumentId, isRestrictedReport, cancellationToken);
-                    break;
-                }
-                if (reportData.ProcessingStatus == Report.ProcessingStatusEnum.FATAL)
-                {
-                    throw new Exception("Error with Generate report FATAL");
-                }
-                if (reportData.ProcessingStatus == Report.ProcessingStatusEnum.CANCELLED)
-                {
-                    return null;
-                }
-                else
-                    await Task.Delay(millisecondsDelay, cancellationToken);
-            }
-            return filePath;
-        }
-
-        public async Task<MemoryStream> GetReportFileStreamByReportIdAsync(string reportId, bool isRestrictedReport, int millisecondsDelay = 500, CancellationToken cancellationToken = default)
-        {
-            MemoryStream stream = null;
-            string ReportDocumentId = string.Empty;
-
-            while (string.IsNullOrEmpty(ReportDocumentId) && !cancellationToken.IsCancellationRequested)
-            {
-                var reportData = await GetReportAsync(reportId, cancellationToken);
-                if (!string.IsNullOrEmpty(reportData.ReportDocumentId))
-                {
-                    stream = await GetReportFileStreamAsync(reportData.ReportDocumentId, isRestrictedReport, cancellationToken);
-                    break;
-                }
-                if (reportData.ProcessingStatus == Report.ProcessingStatusEnum.FATAL)
-                {
-                    throw new Exception("Error with Generate report FATAL");
-                }
-                if (reportData.ProcessingStatus == Report.ProcessingStatusEnum.CANCELLED)
-                {
-                    return null;
-                }
-                else
-                    await Task.Delay(millisecondsDelay, cancellationToken);
-            }
-            return stream;
-        }
-
 
         public IList<string> DownloadExistingReportAndDownloadFile(ReportTypes reportTypes, DateTime? createdSince = null, DateTime? createdUntil = null) =>
             Task.Run(() => DownloadExistingReportAndDownloadFileAsync(reportTypes, createdSince, createdUntil)).ConfigureAwait(false).GetAwaiter().GetResult();
