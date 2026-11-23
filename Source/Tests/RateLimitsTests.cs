@@ -36,6 +36,28 @@ namespace Tests
             Assert.That(stopwatch.ElapsedMilliseconds, Is.LessThanOrEqualTo(expectedWaitMilliseconds + 1000));
         }
 
+        // Orders API v0 default usage plans, from the "Usage Plan" tables of Amazon's ordersV0.json
+        // (github.com/amzn/selling-partner-api-models, models/orders-api-model). getOrder & co. were 0.0167 / 20
+        // (getOrders' plan), which spaced single-order lookups a minute apart.
+        [Test]
+        [TestCase(RateLimitType.Order_GetOrders, 0.0167, 20)]
+        [TestCase(RateLimitType.Order_GetOrder, 0.5, 30)]
+        [TestCase(RateLimitType.Order_GetOrderBuyerInfo, 0.5, 30)]
+        [TestCase(RateLimitType.Order_GetOrderAddress, 0.5, 30)]
+        [TestCase(RateLimitType.Order_GetOrderItems, 0.5, 30)]
+        [TestCase(RateLimitType.Order_GetOrderItemsBuyerInfo, 0.5, 30)]
+        [TestCase(RateLimitType.Order_UpdateShipmentStatus, 5, 15)]
+        [TestCase(RateLimitType.Order_GetOrderRegulatedInfo, 0.5, 30)]
+        [TestCase(RateLimitType.Order_UpdateVerificationStatus, 0.5, 30)]
+        [TestCase(RateLimitType.Order_ShipmentConfirmation, 2, 10)]
+        public void OrdersV0_Defaults_MatchAmazonsUsagePlans(RateLimitType type, decimal rate, int burst)
+        {
+            var limit = RateLimitsDefinitions.RateLimitsTime()[type];
+
+            Assert.That(limit.Rate, Is.EqualTo(rate));
+            Assert.That(limit.Burst, Is.EqualTo(burst));
+        }
+
         // Regression test for issue #940: when many requests for the same rate limit type run in parallel
         // against the shared RateLimits instance, the token bucket must drain within the expected window.
         // Before NextRate was serialized, racing threads each pushed LastRequest further into the future,
