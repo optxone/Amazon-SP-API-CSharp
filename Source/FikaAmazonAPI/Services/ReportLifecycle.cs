@@ -48,7 +48,7 @@ namespace FikaAmazonAPI.Services
         Task<Report> GetReportAsync(string reportId, CancellationToken cancellationToken);
 
         /// <summary>Downloads the report document to a temp file (never whole in memory). Dispose the result to delete it.</summary>
-        Task<ReportDocumentFile> DownloadDocumentAsync(string reportDocumentId, bool isRestrictedReport, CancellationToken cancellationToken);
+        Task<ReportDocumentFile?> DownloadDocumentAsync(string reportDocumentId, bool isRestrictedReport, CancellationToken cancellationToken);
     }
 
     /// <summary>A report that reached a terminal status (see <see cref="ReportLifecycle.WaitForTerminalStatusAsync"/>).</summary>

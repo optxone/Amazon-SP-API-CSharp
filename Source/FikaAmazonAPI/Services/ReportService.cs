@@ -220,10 +220,10 @@ namespace FikaAmazonAPI.Services
         /// document metadata.
         /// </summary>
         /// <exception cref="AmazonReportDocumentDownloadException">The pre-signed URL answered a non-success status.</exception>
-        public ReportDocumentFile GetReportDocumentFile(string reportDocumentId, bool isRestrictedReport = false) =>
+        public ReportDocumentFile? GetReportDocumentFile(string reportDocumentId, bool isRestrictedReport = false) =>
             Task.Run(() => GetReportDocumentFileAsync(reportDocumentId, isRestrictedReport)).ConfigureAwait(false).GetAwaiter().GetResult();
 
-        public async Task<ReportDocumentFile> GetReportDocumentFileAsync(string reportDocumentId, bool isRestrictedReport = false, CancellationToken cancellationToken = default)
+        public async Task<ReportDocumentFile?> GetReportDocumentFileAsync(string reportDocumentId, bool isRestrictedReport = false, CancellationToken cancellationToken = default)
         {
             var reportDocument = await GetReportDocumentAsync(reportDocumentId, isRestrictedReport, cancellationToken);
             if (reportDocument == null)
@@ -238,7 +238,7 @@ namespace FikaAmazonAPI.Services
             }
         }
 
-        Task<ReportDocumentFile> IReportOperations.DownloadDocumentAsync(string reportDocumentId, bool isRestrictedReport, CancellationToken cancellationToken)
+        Task<ReportDocumentFile?> IReportOperations.DownloadDocumentAsync(string reportDocumentId, bool isRestrictedReport, CancellationToken cancellationToken)
             => GetReportDocumentFileAsync(reportDocumentId, isRestrictedReport, cancellationToken);
 
         private string GetFile(ReportDocument reportDocument) =>
@@ -423,10 +423,10 @@ namespace FikaAmazonAPI.Services
         /// </summary>
         /// <exception cref="AmazonReportFatalException">The report ended FATAL, or DONE without a document.</exception>
         /// <exception cref="AmazonReportTimeoutException">Not finished within <see cref="ReportPollingOptions.MaxWait"/>.</exception>
-        public ReportDocumentFile CreateReportAndDownloadDocumentFile(ReportTypes reportType, DateTime? dataStartTime = null, DateTime? dataEndTime = null, ReportOptions? reportOptions = null, bool isRestrictedReport = false, List<MarketPlace>? marketplaces = null, ReportPollingOptions? polling = null) =>
+        public ReportDocumentFile? CreateReportAndDownloadDocumentFile(ReportTypes reportType, DateTime? dataStartTime = null, DateTime? dataEndTime = null, ReportOptions? reportOptions = null, bool isRestrictedReport = false, List<MarketPlace>? marketplaces = null, ReportPollingOptions? polling = null) =>
             Task.Run(() => CreateReportAndDownloadDocumentFileAsync(reportType, dataStartTime, dataEndTime, reportOptions, isRestrictedReport, marketplaces, polling)).ConfigureAwait(false).GetAwaiter().GetResult();
 
-        public async Task<ReportDocumentFile> CreateReportAndDownloadDocumentFileAsync(ReportTypes reportType, DateTime? dataStartTime = null, DateTime? dataEndTime = null, ReportOptions? reportOptions = null, bool isRestrictedReport = false, List<MarketPlace>? marketplaces = null, ReportPollingOptions? polling = null, CancellationToken cancellationToken = default)
+        public async Task<ReportDocumentFile?> CreateReportAndDownloadDocumentFileAsync(ReportTypes reportType, DateTime? dataStartTime = null, DateTime? dataEndTime = null, ReportOptions? reportOptions = null, bool isRestrictedReport = false, List<MarketPlace>? marketplaces = null, ReportPollingOptions? polling = null, CancellationToken cancellationToken = default)
         {
             var result = await CreateReportAndDownloadDocumentFileAsync(
                 BuildCreateReportParameters(reportType, dataStartTime, dataEndTime, reportOptions, marketplaces),
@@ -467,7 +467,7 @@ namespace FikaAmazonAPI.Services
         }
 
         /// <summary>Waits for an existing report and downloads it to a temp file (never whole in memory). Null when CANCELLED.</summary>
-        public async Task<ReportDocumentFile> GetReportDocumentFileByReportIdAsync(string reportId, bool isRestrictedReport, ReportPollingOptions? polling = null, CancellationToken cancellationToken = default)
+        public async Task<ReportDocumentFile?> GetReportDocumentFileByReportIdAsync(string reportId, bool isRestrictedReport, ReportPollingOptions? polling = null, CancellationToken cancellationToken = default)
         {
             var poll = await ReportLifecycle.WaitForTerminalStatusAsync(this, reportId, polling, cancellationToken);
             return await ReportLifecycle.DownloadTerminalAsync(this, poll.Report, null, isRestrictedReport,

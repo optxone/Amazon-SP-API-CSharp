@@ -198,7 +198,7 @@ namespace Tests
                 });
             }
 
-            public async Task<ReportDocumentFile> DownloadDocumentAsync(string reportDocumentId, bool isRestrictedReport, CancellationToken cancellationToken)
+            public async Task<ReportDocumentFile?> DownloadDocumentAsync(string reportDocumentId, bool isRestrictedReport, CancellationToken cancellationToken)
             {
                 Downloads++;
                 if (FailDownloads) throw new AmazonReportDocumentDownloadException(reportDocumentId, 403);
